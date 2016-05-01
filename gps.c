@@ -5,14 +5,17 @@
  * @version 1.0
  */
 
-#include <linux/device.h>	// Kernel driver
+#include <asm/uaccess.h>	// User and kernel space interaction
+#include <linux/cdev.h>	// cdev functions
+#include <linux/device.h>	// class functions
 #include <linux/fs.h>	// File system, includes fcntl.h
 // Function and variable declaration macros
 // These macros are useful if the driver is loaded at boot time (i.e. it is a built-in driver)
-#include <linux/init.h>
+#include <linux/init.h>	// init and exit macros
 #include <linux/kern_levels.h>	// printk macros
 #include <linux/module.h>	// Needed by all modules
 #include <linux/moduleparam.h>	// Module params macros
+#include <linux/slab.h>	// kmalloc & kfree
 
 #define DRIVER_LICENSE	"GPL" // Open-source code under GPL license
 #define DRIVER_AUTHOR	"Marcos Canales Mayo <marketes94@gmail.com>"
@@ -21,17 +24,24 @@
 #define DRIVER_VERSION	"1.0"
 
 #define DEVICE_NAME	"gps"
+#define NUMBER_OF_MINORS	1
 
 // Device registration data
-static int gps_major_number;
 static struct class* gps_class = NULL;
-static struct device* gps_device = NULL;
 
 // UART device data
 static struct file* uart_dev_filp = NULL;
 static char* uart_dev __initdata = "/dev/ttyO4";
 module_param(uart_dev, charp, 0);
 MODULE_PARM_DESC(uart_dev, "Path to the GPS UART device");
+static dev_t gps_devn = NULL;
+
+// Driver variables
+static char gps_buf[256];
+struct gps_cdev{
+	struct cdev cdev; // Needed char device struct
+};
+static struct gps_cdev* gps_devp;
 
 // Driver operations
 static int gps_open(struct inode*, struct file*);
@@ -47,28 +57,34 @@ static struct file_operations fileops =
 };
 
 static int gps_open(struct inode* inodep, struct file* filep){
+	printk(KERN_INFO "GPS device opened");
 	return 0;
 }
 
 static int gps_release(struct inode* inodep, struct file* filep){
+	printk(KERN_INFO "GPS device closed");
 	return 0;
 }
 
-static ssize_t gps_read(struct file* filep, char* buf, size_t len, loff_t* offp){
-	return 0;
+static ssize_t gps_read(struct file* filep, char __user *buf, size_t len, loff_t* offp){
+	vfs_read(uart_dev_filp, gps_buf, len, offp);
+	return copy_to_user(buf, gps_buf, len);
 }
 
-static ssize_t gps_write(struct file* filep, const char* buf, size_t len, loff_t* offp){
+static ssize_t gps_write(struct file* filep, const char __user *buf, size_t len, loff_t* offp){
 	return 0;
 }
 
 static int __init gps_init(void)
 {
+	int result;
+
+	// *dev_t, baseminor, number_of_minors, name
+	result = alloc_chrdev_region(&gps_devn, 0, NUMBER_OF_MINORS, DEVICE_NAME);
 	// Get major number for the device
-	gps_major_number = register_chrdev(0, DEVICE_NAME, &fileops);
-	if (gps_major_number<0){
+	if (result<0){
     	printk(KERN_ALERT "Could not register a major number\n");
-    	return -1;
+    	return result;
 	}
 
 	// Register the class
@@ -78,11 +94,17 @@ static int __init gps_init(void)
 		goto UNDO_MAJOR_NUMBER;
 	}
 
-	// Register the device
-	// MKDEV turns MAJOR and MINOR into a dev_t
-	gps_device = device_create(gps_class, NULL, MKDEV(gps_major_number, 0), NULL, DEVICE_NAME);
-	if (IS_ERR(gps_device)){
-		printk(KERN_ALERT "Could not create the device\n");
+	// GFP_KERNEL = Normal and blockable allocation. This means that it will sleep until
+	// the kernel can get the requested memory.
+	gps_devp = kmalloc(sizeof(struct gps_cdev), GFP_KERNEL);
+	// cdev struct with kobject
+	cdev_init(&gps_devp->cdev, &fileops);
+	gps_devp->cdev.owner = THIS_MODULE;
+	gps_devp->cdev.ops = &fileops;
+	// *cdev, dev_t, number_of_minors
+	result = cdev_add(&gps_devp->cdev, gps_devn, NUMBER_OF_MINORS);
+	if (result<0){
+		printk(KERN_ALERT "Could not add cdev to the system\n");
 		goto UNDO_CLASS;
 	}
 
@@ -98,14 +120,13 @@ static int __init gps_init(void)
 	return 0;
 
 	// Error. Returning 1 means that init_module failed.
-	UNDO:
 	UNDO_DEVICE:
-		device_destroy(gps_class, MKDEV(gps_major_number, 0));
+		cdev_del(&gps_devp->cdev);
 	UNDO_CLASS:
 		class_unregister(gps_class);
 		class_destroy(gps_class);
 	UNDO_MAJOR_NUMBER:
-		unregister_chrdev(gps_major_number, DEVICE_NAME);
+		unregister_chrdev(MAJOR(gps_devn), DEVICE_NAME);
 	return -1;
 }
 
@@ -113,10 +134,11 @@ static void __exit gps_exit(void)
 {
 	// Undo everything
 	filp_close(uart_dev_filp, NULL);
-	device_destroy(gps_class, MKDEV(gps_major_number, 0));
+	cdev_del(&gps_devp->cdev);
+	kfree(gps_devp);
 	class_unregister(gps_class);
 	class_destroy(gps_class);
-	unregister_chrdev(gps_major_number, DEVICE_NAME);
+	unregister_chrdev_region(gps_devn, NUMBER_OF_MINORS);
 	printk(KERN_INFO "Disabled GPS module\n");
 }
 
