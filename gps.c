@@ -126,7 +126,7 @@ static int __init gps_init(void)
 		class_unregister(gps_class);
 		class_destroy(gps_class);
 	UNDO_MAJOR_NUMBER:
-		unregister_chrdev(MAJOR(gps_devn), DEVICE_NAME);
+		unregister_chrdev_region(gps_devn, NUMBER_OF_MINORS);
 	return -1;
 }
 
