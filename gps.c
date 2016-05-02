@@ -16,7 +16,7 @@
 #include <linux/kern_levels.h>	// printk macros
 #include <linux/module.h>	// Needed by all modules
 #include <linux/moduleparam.h>	// Module params macros
-#include <linux/slab.h>	// kmalloc & kfrees
+#include <linux/slab.h>	// kmalloc and kfree
 
 #define DRIVER_LICENSE	"GPL" // Open-source code under GPL license
 #define DRIVER_AUTHOR	"Marcos Canales Mayo <marketes94@gmail.com>"
@@ -73,17 +73,22 @@ static int gps_release(struct inode* inodep, struct file* filep){
 }
 
 static ssize_t gps_read(struct file* filep, char __user *buf, size_t len, loff_t* offp){
-	int res;
+	struct gps_cdev* gps_cdev;
+
+	gps_cdev = filep->private_data;
+
 	char gps_buf[8]= "testasd\0";
 	printk(KERN_INFO "Reading from GPS\n");
 	//vfs_read(uart_dev_filp, gps_buf, len, offp);
 	printk(KERN_INFO "gps_buf is %s; len is %d\n", gps_buf, len);
-	res = copy_to_user(buf, gps_buf, len);
-	printk(KERN_INFO "gps Could not copy %d bytes\n", res);
-	return res;
+	return copy_to_user(buf, gps_buf, len);
 }
 
 static ssize_t gps_write(struct file* filep, const char __user *buf, size_t len, loff_t* offp){
+	struct gps_cdev* gps_cdev;
+	
+	gps_cdev = filep->private_data;
+
 	printk(KERN_INFO "Writing to GPS\n");
 	return 0;
 }
@@ -99,12 +104,6 @@ static int __init gps_init(void)
     	printk(KERN_ALERT "Could not register a major number\n");
     	return result;
 	}
-
-	/*result = mknod(DEVICE_PATH, S_IFCHR | 0666, gps_devn);
-	if (result<0){
-		printk(KERN_ALERT "Could not create fs node\n");
-		goto UNDO_MAJOR_NUMBER;
-	}*/
 
 	// Register the class
 	gps_class = class_create(THIS_MODULE, DEVICE_NAME);
@@ -145,8 +144,6 @@ static int __init gps_init(void)
 	UNDO_CLASS:
 		class_unregister(gps_class);
 		class_destroy(gps_class);
-	UNDO_NOD:
-		// Should remove /dev/gps?
 	UNDO_MAJOR_NUMBER:
 		unregister_chrdev_region(gps_devn, NUMBER_OF_MINORS);
 	return -1;
